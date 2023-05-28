@@ -19,6 +19,76 @@ FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # yolov5 strongsort root directory
 WEIGHTS = ROOT / 'weights'
 
+import torch.nn as nn
+import torchvision.models as models
+from torchvision import datasets, models, transforms
+
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+# def plot_track_gender(image, tlwhs,gender, obj_ids, scores=None, frame_id=0, fps=0., ids2=None):
+#     im = np.ascontiguousarray(np.copy(image))
+#     im_h, im_w = im.shape[:2]
+
+#     top_view = np.zeros([im_w, im_w, 3], dtype=np.uint8) + 255
+#     text_scale = 2
+#     text_thickness = 2
+#     line_thickness = 3
+
+#     radius = max(5, int(im_w/140.))
+#     cv2.putText(im, 'frame: %d fps: %.2f num: %d' % (frame_id, fps, len(tlwhs)),
+#                 (0, int(15 * text_scale)), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), thickness=2)
+
+#     for i, tlwh in enumerate(tlwhs):
+#         x1, y1, w, h = tlwh
+#         intbox = tuple(map(int, (x1, y1, x1 + w, y1 + h)))
+#         obj_id = int(obj_ids[i])
+#         id_text = '{}'.format(int(obj_id))
+#         if ids2 is not None:
+#             id_text = id_text + ', {}'.format(int(ids2[i]))
+#         # color = get_color(abs(obj_id))
+#         if gender[i]==1:
+
+#           cv2.rectangle(im, intbox[0:2], intbox[2:4], color=(255,0,0), thickness=line_thickness)
+#           cv2.putText(im, id_text, (intbox[0], intbox[1]), cv2.FONT_HERSHEY_PLAIN, text_scale, (0, 0, 255),
+#                       thickness=text_thickness)
+#         else:
+#           cv2.rectangle(im, intbox[0:2], intbox[2:4], color=(35,176,35), thickness=line_thickness)
+#           cv2.putText(im, id_text, (intbox[0], intbox[1]), cv2.FONT_HERSHEY_PLAIN, text_scale, (0, 0, 255),
+#                       thickness=text_thickness)
+
+#     return im
+
+
+def to_device(data, device):
+    """Move tensor(s) to chosen device"""
+    if isinstance(data, (list,tuple)):
+        return [to_device(x, device) for x in data]
+    return data.to(device, non_blocking=True)
+
+dataTest_transforms = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize((224,64), interpolation=3),
+        transforms.ToTensor()])
+
+class Gender(nn.Module):
+  def __init__(self):
+      super().__init__()
+      self.resnet = models.resnet18(pretrained=True).to(device)
+      self.dropout1 = nn.Dropout(0.2)
+      self.dropout2 = nn.Dropout(0.6)
+      self.resnet.fc = nn.Identity()
+      self.output = nn.Linear(512, 1)
+      self.sigmoid = nn.Sigmoid()
+      self.act = nn.ReLU()
+                            
+  def forward(self, x):
+      # x = self.dropout1(x)
+      x = self.act(self.resnet(x))
+      x = self.dropout2(x)
+      x = self.sigmoid(self.output(x))
+      return x
+
+
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 if str(ROOT / 'yolov8') not in sys.path:
@@ -29,15 +99,15 @@ if str(ROOT / 'trackers' / 'strongsort') not in sys.path:
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 import logging
-from yolov8.ultralytics.nn.autobackend import AutoBackend
-from yolov8.ultralytics.yolo.data.dataloaders.stream_loaders import LoadImages, LoadStreams
-from yolov8.ultralytics.yolo.data.utils import IMG_FORMATS, VID_FORMATS
-from yolov8.ultralytics.yolo.utils import DEFAULT_CFG, LOGGER, SETTINGS, callbacks, colorstr, ops
-from yolov8.ultralytics.yolo.utils.checks import check_file, check_imgsz, check_imshow, print_args, check_requirements
-from yolov8.ultralytics.yolo.utils.files import increment_path
-from yolov8.ultralytics.yolo.utils.torch_utils import select_device
-from yolov8.ultralytics.yolo.utils.ops import Profile, non_max_suppression, scale_boxes, process_mask, process_mask_native
-from yolov8.ultralytics.yolo.utils.plotting import Annotator, colors, save_one_box
+from ultralytics.nn.autobackend import AutoBackend
+from ultralytics.yolo.data.dataloaders.stream_loaders import LoadImages, LoadStreams
+from ultralytics.yolo.data.utils import IMG_FORMATS, VID_FORMATS
+from ultralytics.yolo.utils import DEFAULT_CFG, LOGGER, SETTINGS, callbacks, colorstr, ops
+from ultralytics.yolo.utils.checks import check_file, check_imgsz, check_imshow, print_args, check_requirements
+from ultralytics.yolo.utils.files import increment_path
+from ultralytics.yolo.utils.torch_utils import select_device
+from ultralytics.yolo.utils.ops import Profile, non_max_suppression, scale_boxes, process_mask, process_mask_native
+from ultralytics.yolo.utils.plotting import Annotator, colors, save_one_box
 
 from trackers.multi_tracker_zoo import create_tracker
 
@@ -147,6 +217,7 @@ def run(
     for frame_idx, batch in enumerate(dataset):
         path, im, im0s, vid_cap, s = batch
         visualize = increment_path(save_dir / Path(path[0]).stem, mkdir=True) if visualize else False
+        import cv2
         with dt[0]:
             im = torch.from_numpy(im).to(device)
             im = im.half() if half else im.float()  # uint8 to fp16/32
@@ -200,6 +271,10 @@ def run(
                     tracker_list[i].tracker.camera_update(prev_frames[i], curr_frames[i])
 
             if det is not None and len(det):
+                online_tlwhs = []
+                online_ids = []
+                online_scores = []
+                online_gender = []
                 if is_seg:
                     shape = im0.shape
                     # scale bbox first the crop masks
@@ -239,6 +314,36 @@ def run(
                         id = output[4]
                         cls = output[5]
                         conf = output[6]
+                        # im0 is original frame and icm is copy 
+                        # cv2.imwrite('./im.png',im0)
+                        
+                        # cv2.imwrite('./crop5.png',imc[int(output[1]):int(output[3]), int(output[0]):int(output[2])])
+                        # cropped_image is crop image per id
+                        cropped_image = imc[int(output[1]):int(output[3]), int(output[0]):int(output[2])]
+                        online_ids.append(id)
+                        online_tlwhs.append(bbox)
+                        if gender:
+                            print('if args.gender:')                           
+                                
+                            model = Gender()
+
+                            model = to_device(model,device)
+                            model = model.to(device)
+                            model.load_state_dict(torch.load('/content/drive/MyDrive/gender_data/epoch-16.pt'))
+                            model.eval()
+                            img = dataTest_transforms(cropped_image)
+                            img = img.to(device)
+                            gender = model(img.unsqueeze(0))
+                            gender = [i.item() for f in gender.round() for i in f]
+                            print('gender_output:',gender[0])
+                            # print('gender_output:',gender[0].round())
+
+                            online_gender.append(gender[0])
+
+
+
+
+
 
                         if save_txt:
                             # to MOT format
@@ -265,7 +370,13 @@ def run(
                             if save_crop:
                                 txt_file_name = txt_file_name if (isinstance(path, list) and len(path) > 1) else ''
                                 save_one_box(np.array(bbox, dtype=np.int16), imc, file=save_dir / 'crops' / txt_file_name / names[c] / f'{id}' / f'{p.stem}.jpg', BGR=True)
-                            
+                                
+                    # online_gender = plot_track_gender(imc, online_tlwhs,online_gender,online_ids, frame_id=frame_idx + 1, fps=12.8)
+            
+            
+            
+            
+            
             else:
                 pass
                 #tracker_list[i].tracker.pred_n_update_all_tracks()
@@ -348,6 +459,7 @@ def parse_opt():
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
     parser.add_argument('--vid-stride', type=int, default=1, help='video frame-rate stride')
     parser.add_argument('--retina-masks', action='store_true', help='whether to plot masks in native resolution')
+    parser.add_argument('--gender', action='store_true', help='whether to plot masks in native resolution')
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     opt.tracking_config = ROOT / 'trackers' / opt.tracking_method / 'configs' / (opt.tracking_method + '.yaml')
