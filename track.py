@@ -24,7 +24,7 @@ import torchvision.models as models
 from torchvision import datasets, models, transforms
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
+# plot gender tracking
 # def plot_track_gender(image, tlwhs,gender, obj_ids, scores=None, frame_id=0, fps=0., ids2=None):
 #     im = np.ascontiguousarray(np.copy(image))
 #     im_h, im_w = im.shape[:2]
